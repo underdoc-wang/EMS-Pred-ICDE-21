@@ -6,7 +6,7 @@ from DGCN import DyGCN, GCN
 
 class STIAM_Net(nn.Module):
     def __init__(self, obs_len:tuple, M_adj:tuple, dyn_kernel_config:dict, sta_kernel_config:dict,
-                 n_nodes:int, input_dim:int, hidden_dim:int, meta_dim:int, lstm_alter=False, lstm_n_layers=1):
+                 n_nodes:int, input_dim:int, hidden_dim:int, meta_dim:int):
         super().__init__()
 
         self.N = n_nodes                    # N
@@ -33,38 +33,31 @@ class STIAM_Net(nn.Module):
             self.gcn_dyn.append(d_list), self.gcn_sta.append(s_list)
             self.layer_norm.append(bn)
 
-        self.lstm_alter = lstm_alter
-        if not self.lstm_alter:
-            # embed
-            if self.M > 1:
-                self.dyn_embed, self.sta_embed = nn.ModuleList(), nn.ModuleList()
-                for d in range(self.M_dyn):
-                    self.dyn_embed.append(nn.Linear(in_features=self.total_len * n_nodes ** 2, out_features=hidden_dim))
-                for s in range(self.M_sta):
-                    self.sta_embed.append(nn.Linear(in_features=n_nodes ** 2, out_features=hidden_dim))
-            # STIA-FC-alpha
-            self.stia = nn.ModuleDict()
-            self.stia['ST'] = nn.ModuleList([nn.Linear(in_features=self.total_len * n_nodes * hidden_dim,
-                                                       out_features=hidden_dim, bias=True),  # spatial dim: 5->4
-                                             nn.Linear(in_features=hidden_dim * 2,
-                                                       out_features=1, bias=True),
-                                             nn.Linear(in_features=n_nodes * hidden_dim,
-                                                       out_features=meta_dim, bias=True),
-                                             nn.Linear(in_features=meta_dim * 2,
-                                                       out_features=1, bias=True)])  # temporal dim: 4->3
-            self.stia['TS'] = nn.ModuleList([nn.Linear(in_features=self.M * n_nodes * hidden_dim,
-                                                       out_features=meta_dim, bias=True),  # temporal dim: 5->4
-                                             nn.Linear(in_features=meta_dim * 2,
-                                                       out_features=1, bias=True),
-                                             nn.Linear(in_features=n_nodes * hidden_dim,
-                                                       out_features=hidden_dim, bias=True),
-                                             nn.Linear(in_features=hidden_dim * 2,
-                                                       out_features=1, bias=True)])  # spatial dim: 4->3
-        else:
-            self.lstm_n_layers = lstm_n_layers
-            self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim,
-                                num_layers=lstm_n_layers, batch_first=True)
-
+        # embed
+        if self.M > 1:
+            self.dyn_embed, self.sta_embed = nn.ModuleList(), nn.ModuleList()
+            for d in range(self.M_dyn):
+                self.dyn_embed.append(nn.Linear(in_features=self.total_len * n_nodes ** 2, out_features=hidden_dim))
+            for s in range(self.M_sta):
+                self.sta_embed.append(nn.Linear(in_features=n_nodes ** 2, out_features=hidden_dim))
+        # STIA-FC-alpha
+        self.stia = nn.ModuleDict()
+        self.stia['ST'] = nn.ModuleList([nn.Linear(in_features=self.total_len * n_nodes * hidden_dim,
+                                                   out_features=hidden_dim, bias=True),  # spatial dim: 5->4
+                                         nn.Linear(in_features=hidden_dim * 2,
+                                                   out_features=1, bias=True),
+                                         nn.Linear(in_features=n_nodes * hidden_dim,
+                                                   out_features=meta_dim, bias=True),
+                                         nn.Linear(in_features=meta_dim * 2,
+                                                   out_features=1, bias=True)])  # temporal dim: 4->3
+        self.stia['TS'] = nn.ModuleList([nn.Linear(in_features=self.M * n_nodes * hidden_dim,
+                                                   out_features=meta_dim, bias=True),  # temporal dim: 5->4
+                                         nn.Linear(in_features=meta_dim * 2,
+                                                   out_features=1, bias=True),
+                                         nn.Linear(in_features=n_nodes * hidden_dim,
+                                                   out_features=hidden_dim, bias=True),
+                                         nn.Linear(in_features=hidden_dim * 2,
+                                                   out_features=1, bias=True)])  # spatial dim: 4->3
         # output
         self.fc_out = nn.Linear(in_features=hidden_dim, out_features=input_dim, bias=True)
 
@@ -104,31 +97,21 @@ class STIAM_Net(nn.Module):
             step_list.append(t_set)
         h_set = torch.stack(step_list, dim=1)       # (batch, seq, M, N, hidden)
 
-        if not self.lstm_alter:
-            # embed
-            if self.M > 1:
-                g_embeds = list()
-                g_embeds.extend([self.dyn_embed[d](dyn_adj_list[d][:, :, 1, :, :].reshape(batch_size, -1)) for d in
-                                 range(self.M_dyn)])
-                g_embeds.extend([self.sta_embed[s](sta_adj_list[s][0, :, :].reshape(-1)).repeat(batch_size, 1) for s in
-                                 range(self.M_sta)])
-                g_embeds = torch.stack(g_embeds, dim=1)
-                # print(g_embeds.shape)
-            else:
-                g_embeds = None
-
-            # STIA
-            st_att = self.ST_att(h_set, g_embeds, meta)
-            ts_att = self.TS_att(h_set, meta, g_embeds)
-            output = st_att + ts_att
+        # embed
+        if self.M > 1:
+            g_embeds = list()
+            g_embeds.extend([self.dyn_embed[d](dyn_adj_list[d][:, :, 1, :, :].reshape(batch_size, -1)) for d in
+                             range(self.M_dyn)])
+            g_embeds.extend([self.sta_embed[s](sta_adj_list[s][0, :, :].reshape(-1)).repeat(batch_size, 1) for s in
+                             range(self.M_sta)])
+            g_embeds = torch.stack(g_embeds, dim=1)
         else:
-            # LSTM variant
-            h_seq = h_set.sum(dim=2).permute(0,2,1,3).reshape(batch_size * self.N, self.total_len, self.hidden_dim)
+            g_embeds = None
 
-            if hidden is None:
-                hidden = self.init_hidden(batch_size)
-            lstm_output, hidden = self.lstm(h_seq, hidden)
-            output = lstm_output[:, -1, :].reshape(batch_size, self.N, self.hidden_dim)
+        # STIA
+        st_att = self.ST_att(h_set, g_embeds, meta)
+        ts_att = self.TS_att(h_set, meta, g_embeds)
+        output = st_att + ts_att
 
         output = output.reshape(batch_size, self.N, self.hidden_dim)
         output = torch.tanh(self.fc_out(output))
@@ -180,11 +163,5 @@ class STIAM_Net(nn.Module):
             x = x.squeeze(dim=1)
 
         return x
-
-    def init_hidden(self, batch_size):
-        weight = next(self.parameters()).data
-        hidden = (weight.new_zeros(self.lstm_n_layers, batch_size*self.N, self.hidden_dim),
-                  weight.new_zeros(self.lstm_n_layers, batch_size*self.N, self.hidden_dim))
-        return hidden
 
 
