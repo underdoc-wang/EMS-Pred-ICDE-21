@@ -64,7 +64,7 @@ if __name__ == '__main__':
                                 dyn_kernel_config=dyn_kernel_config,
                                 sta_kernel_config=sta_kernel_config,
                                 n_nodes=58, input_dim=1, hidden_dim=16,
-                                meta_dim=(24//dt)+7+1, lstm_alter=False)
+                                meta_dim=(24//dt)+7+1)
         model = model.to(args.device)
     else:
         raise ValueError('Unknown model name.')
